@@ -1027,17 +1027,18 @@ function main() {
       };
       return mesh;
     }
-    const accuracyDisc = createDrape('#2f7bff', .16), contactShadow = createDrape('#10203a', .34);
+    const accuracyDisc = createDrape('#ff1010', .14), contactShadow = createDrape('#10203a', .34);
 
     // 땅에 서 있는 3D 핀: 건물 뒤로 가면 가려지고, 가려진 동안에는 흐리게 비친다
     const HEAD_PX = 5.5, HEAD_HEIGHT = 3.1;
     const pin = new THREE.Group();
-    const headGeometry = new THREE.SphereGeometry(1, 28, 20).translate(0, HEAD_HEIGHT, 0);
-    const head = new THREE.Mesh(headGeometry, new THREE.MeshPhongMaterial({ color: '#1f6fff', specular: '#ffffff', shininess: 90 }));
-    const stem = new THREE.Mesh(new THREE.CylinderGeometry(.2, .05, HEAD_HEIGHT, 12).translate(0, HEAD_HEIGHT / 2, 0), new THREE.MeshPhongMaterial({ color: '#f4f7ff', specular: '#ffffff', shininess: 40 }));
-    const ghost = new THREE.Mesh(headGeometry, new THREE.MeshBasicMaterial({ color: '#1f6fff', transparent: true, opacity: .4, depthTest: false, depthWrite: false }));
+    const headGeometry = new THREE.SphereGeometry(.9, 28, 20).translate(0, HEAD_HEIGHT, 0);
+    const head = new THREE.Mesh(headGeometry, new THREE.MeshPhongMaterial({ color: '#ff1010', emissive: '#d80000', specular: '#ffffff', shininess: 120 }));
+    const rim = new THREE.Mesh(new THREE.SphereGeometry(1.1, 28, 20).translate(0, HEAD_HEIGHT, 0), new THREE.MeshBasicMaterial({ color: '#ffffff', side: THREE.BackSide }));
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(.22, .06, HEAD_HEIGHT, 12).translate(0, HEAD_HEIGHT / 2, 0), new THREE.MeshPhongMaterial({ color: '#ff1010', emissive: '#b00000' }));
+    const ghost = new THREE.Mesh(headGeometry, new THREE.MeshBasicMaterial({ color: '#ff1010', transparent: true, opacity: .8, depthTest: false, depthWrite: false }));
     ghost.renderOrder = 9;
-    pin.add(head, stem, ghost);
+    pin.add(rim, head, stem, ghost);
     pin.visible = false;
     scene.add(pin);
 
