@@ -31,8 +31,8 @@
   #home { align-self: center; padding: 7px 16px; border: 1px solid var(--navy); border-radius: 6px; background: #fff; color: var(--navy); font: inherit; cursor: pointer; }
   #home:hover { background: var(--navy); color: #fff; }
   #note { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
-  .marker { position: absolute; left: 0; top: 0; display: grid; place-items: center; width: 2.9%; aspect-ratio: 1; padding: 0; border: 2px solid #fff; border-radius: 50%; background: var(--navy); color: #fff; font: 500 clamp(9px, 1.05vw, 14px)/1 system-ui, sans-serif; cursor: pointer; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
-  .marker.on { background: var(--accent); color: #1a1a1a; }
+  .marker { position: absolute; left: 0; top: 0; display: grid; place-items: center; width: 2.9%; aspect-ratio: 1; padding: 0; border: 0; border-radius: 50%; background: none; color: transparent; font: 500 clamp(9px, 1.05vw, 14px)/1 system-ui, sans-serif; cursor: pointer; }
+  .marker:focus-visible { outline: 2px solid var(--accent); }
   #locate { position: absolute; left: 12px; bottom: 12px; padding: 9px 14px; border: 0; border-radius: 999px; background: #fff; color: var(--navy); font: 600 14px/1 system-ui, "Malgun Gothic", sans-serif; cursor: pointer; box-shadow: 0 1px 5px rgba(0, 0, 0, .35); }
   #locate.on { background: var(--navy); color: #fff; }
   #gps-status { position: absolute; left: 12px; bottom: 56px; max-width: calc(100% - 24px); margin: 0; padding: 6px 10px; border-radius: 7px; background: rgba(20, 26, 40, .86); color: #fff; font-size: 13px; }
@@ -902,6 +902,23 @@ function main() {
     campus.traverse((node) => { if (node.userData.placeId === id) { tops.union(new THREE.Box3().setFromObject(node)); found = true; } });
     return found ? tops : null;
   };
+  function badgeTexture(id, fill, textColor) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 128;
+    const c = canvas.getContext('2d');
+    c.fillStyle = '#fff';
+    c.beginPath(); c.arc(64, 64, 62, 0, 7); c.fill();
+    c.fillStyle = fill;
+    c.beginPath(); c.arc(64, 64, 52, 0, 7); c.fill();
+    c.fillStyle = textColor;
+    c.font = '500 60px system-ui, sans-serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillText(id, 64, 67);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }
   const itemsEl = document.getElementById('items');
   const places = PLACES.map(([id, name, u, v]) => {
     const box = anchorHeight(id);
@@ -920,7 +937,12 @@ function main() {
     button.lastChild.textContent = name;
     item.append(button);
     itemsEl.append(item);
-    const place = { id, name, u, v, anchor, focus, marker, button };
+    const badges = [badgeTexture(id, '#1f2a83', '#fff'), badgeTexture(id, '#ffb400', '#1a1a1a')];
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: badges[0], sizeAttenuation: false, depthTest: false, depthWrite: false }));
+    sprite.position.copy(anchor);
+    sprite.renderOrder = 4;   // 내 위치 핀(5 이상)보다 먼저 그려서 핀이 항상 번호 위에 오게 한다
+    scene.add(sprite);
+    const place = { id, name, u, v, anchor, focus, marker, button, sprite, badges };
     marker.addEventListener('click', () => select(place));
     button.addEventListener('click', () => select(place));
     return place;
@@ -928,10 +950,10 @@ function main() {
 
   let selected = null, flight = null;
   function highlight(place) {
-    selected?.marker.classList.remove('on');
+    if (selected) selected.sprite.material.map = selected.badges[0];
     selected?.button.classList.remove('on');
     selected = place;
-    place?.marker.classList.add('on');
+    if (place) place.sprite.material.map = place.badges[1];
     place?.button.classList.add('on');
   }
   function select(place) {
@@ -973,6 +995,8 @@ function main() {
     const fit = Math.max(1, FRAME.w / FRAME.h / camera.aspect);
     camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * fit));
     camera.updateProjectionMatrix();
+    const screenToSprite = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / h;
+    for (const { sprite, marker } of places) sprite.scale.setScalar(marker.offsetWidth * screenToSprite);
   }
   new ResizeObserver(resize).observe(mapEl);
   resize();
@@ -1033,11 +1057,13 @@ function main() {
     const HEAD_PX = 5.5, HEAD_HEIGHT = 3.1;
     const pin = new THREE.Group();
     const headGeometry = new THREE.SphereGeometry(.9, 28, 20).translate(0, HEAD_HEIGHT, 0);
-    const head = new THREE.Mesh(headGeometry, new THREE.MeshPhongMaterial({ color: '#ff1010', emissive: '#d80000', specular: '#ffffff', shininess: 120 }));
-    const rim = new THREE.Mesh(new THREE.SphereGeometry(1.1, 28, 20).translate(0, HEAD_HEIGHT, 0), new THREE.MeshBasicMaterial({ color: '#ffffff', side: THREE.BackSide }));
-    const stem = new THREE.Mesh(new THREE.CylinderGeometry(.22, .06, HEAD_HEIGHT, 12).translate(0, HEAD_HEIGHT / 2, 0), new THREE.MeshPhongMaterial({ color: '#ff1010', emissive: '#b00000' }));
+    const head = new THREE.Mesh(headGeometry, new THREE.MeshPhongMaterial({ color: '#ff1010', emissive: '#d80000', specular: '#ffffff', shininess: 120, transparent: true }));
+    const rim = new THREE.Mesh(new THREE.SphereGeometry(1.1, 28, 20).translate(0, HEAD_HEIGHT, 0), new THREE.MeshBasicMaterial({ color: '#ffffff', side: THREE.BackSide, transparent: true }));
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(.22, .06, HEAD_HEIGHT, 12).translate(0, HEAD_HEIGHT / 2, 0), new THREE.MeshPhongMaterial({ color: '#ff1010', emissive: '#b00000', transparent: true }));
     const ghost = new THREE.Mesh(headGeometry, new THREE.MeshBasicMaterial({ color: '#ff1010', transparent: true, opacity: .8, depthTest: false, depthWrite: false }));
-    ghost.renderOrder = 9;
+    rim.renderOrder = stem.renderOrder = 5;
+    head.renderOrder = 6;
+    ghost.renderOrder = 7;
     pin.add(rim, head, stem, ghost);
     pin.visible = false;
     scene.add(pin);
