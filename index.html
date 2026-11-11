@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>협성대 3D 지도</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<style>
+  :root { --panel: rgba(20, 26, 32, .86); --line: rgba(255, 255, 255, .14); --text: #eef2f4; --muted: #a9b4bb; --accent: #ffc247; --blue: #2f7bff; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #bcd6e8; color: var(--text); font: 14px/1.45 system-ui, "Malgun Gothic", sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #panel { position: fixed; top: 16px; left: 16px; width: 248px; max-height: calc(100% - 64px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(6px); }
+  #panel header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0; font-size: 17px; }
+  #summary { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  #list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; }
+  #list button { width: 100%; display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  #list button:hover { background: rgba(255, 255, 255, .1); }
+  #list button.on { background: var(--accent); color: #1a1a1a; }
+  #list small { color: inherit; opacity: .65; white-space: nowrap; }
+  #info { position: fixed; top: 16px; right: 16px; width: 220px; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  #info[hidden] { display: none; }
+  #info h2 { margin: 0 0 8px; font-size: 16px; }
+  #info dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; }
+  #info dt { color: var(--muted); }
+  #info dd { margin: 0; text-align: right; }
+  #labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+  .label { position: absolute; left: 0; top: 0; padding: 2px 7px; border-radius: 5px; background: var(--panel); font-size: 12px; white-space: nowrap; }
+  .label.on { background: var(--accent); color: #1a1a1a; }
+  #credit { position: fixed; left: 16px; right: 16px; bottom: 10px; color: #26323a; font-size: 11px; text-shadow: 0 0 4px rgba(255, 255, 255, .8); }
+  #credit a { color: inherit; }
+  #locate { position: fixed; right: 16px; bottom: 44px; padding: 11px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+  #locate.on { background: var(--blue); }
+  #gps-status { position: fixed; right: 16px; bottom: 94px; max-width: min(280px, calc(100% - 32px)); margin: 0; padding: 7px 11px; border-radius: 8px; background: var(--panel); font-size: 13px; }
+  #gps-status[hidden], #me[hidden] { display: none; }
+  #me { position: fixed; left: 0; top: 0; width: 20px; height: 20px; border: 3px solid #fff; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 1px rgba(0, 0, 0, .25), 0 1px 5px rgba(0, 0, 0, .45); pointer-events: none; }
+  #toggle { display: none; }
+  #error { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: #20262b; text-align: center; }
+  #error[hidden] { display: none; }
+  @media (max-width: 640px) {
+    #panel { width: calc(100% - 32px); max-height: 45%; }
+    #panel header { cursor: pointer; border-bottom: 0; }
+    #panel:not(.open) #list { display: none; }
+    #toggle { display: inline; float: right; color: var(--muted); font-size: 12px; font-weight: 400; }
+    #info { top: auto; right: 16px; bottom: 90px; width: 190px; }
+    #locate { right: auto; left: 16px; bottom: 90px; }
+    #gps-status { right: auto; left: 16px; bottom: 140px; }
+    .label { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="labels"></div>
+<aside id="panel">
+  <header id="panel-head"><h1>협성대학교 3D 지도<span id="toggle">건물 목록</span></h1><p id="summary">불러오는 중</p></header>
+  <ul id="list"></ul>
+</aside>
+<section id="info" hidden></section>
+<div id="me" hidden></div>
+<p id="gps-status" role="status" hidden></p>
+<button id="locate" type="button">내 위치</button>
+<p id="credit">건물·도로 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap 기여자</a> (ODbL) · 고도 AWS Terrain Tiles (SRTM) · 건물 윤곽·층수·지붕색 일부 국토교통부 브이월드 (공공누리 제1유형) · 지도 자료 ODbL 1.0</p>
+<div id="error" hidden></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const DATA_URL = 'data/campus.json';
+const PAD_CELLS = 10;           // 지형 격자 밖으로 나간 건물(vw/24)을 받치도록 가장자리를 2.5 m x 10칸 늘린다
+const PX_PER_M = 4;
+const ROAD_STYLE = {
+  tertiary: { color: '#55595e', width: 9 },
+  service: { color: '#74787c', width: 5 },
+  path: { color: '#c9b48f', width: 2.2 },
+};
+const LAND_COLOR = { wood: '#5f8a56', park: '#94bd78', pitch: '#b98b5f', water: '#6aa5cf' };
+
+function padTerrain(t) {
+  const nx = t.nx + PAD_CELLS * 2, nz = t.nz + PAD_CELLS * 2;
+  const heights = new Float32Array(nx * nz);
+  for (let i = 0; i < nz; i++) {
+    const si = Math.min(Math.max(i - PAD_CELLS, 0), t.nz - 1);
+    for (let j = 0; j < nx; j++) {
+      const sj = Math.min(Math.max(j - PAD_CELLS, 0), t.nx - 1);
+      heights[i * nx + j] = t.dm[si * t.nx + sj] / 10;
+    }
+  }
+  return { nx, nz, step: t.step, x0: t.x0 - PAD_CELLS * t.step, z0: t.z0 - PAD_CELLS * t.step, heights };
+}
+
+function makeGroundSampler(g) {
+  return (x, z) => {
+    const gx = Math.min(Math.max((x - g.x0) / g.step, 0), g.nx - 1.001);
+    const gz = Math.min(Math.max((z - g.z0) / g.step, 0), g.nz - 1.001);
+    const j = Math.floor(gx), i = Math.floor(gz), fx = gx - j, fz = gz - i, k = i * g.nx + j;
+    const near = g.heights[k] * (1 - fx) + g.heights[k + 1] * fx;
+    const far = g.heights[k + g.nx] * (1 - fx) + g.heights[k + g.nx + 1] * fx;
+    return near * (1 - fz) + far * fz;
+  };
+}
+
+function paintGround(data, g) {
+  const width = (g.nx - 1) * g.step, depth = (g.nz - 1) * g.step;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width * PX_PER_M);
+  canvas.height = Math.round(depth * PX_PER_M);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(PX_PER_M, 0, 0, PX_PER_M, -g.x0 * PX_PER_M, -g.z0 * PX_PER_M);
+  const trace = (ring) => {
+    ring.forEach(([x, z], k) => (k ? ctx.lineTo(x, z) : ctx.moveTo(x, z)));
+    ctx.closePath();
+  };
+  const fillRings = (rings, color) => {
+    ctx.beginPath();
+    rings.forEach(trace);
+    ctx.fillStyle = color;
+    ctx.fill('evenodd');
+  };
+  ctx.fillStyle = '#c4c8b8';
+  ctx.fillRect(g.x0, g.z0, width, depth);
+  fillRings(data.campus, '#a8c48b');
+  for (const land of data.lands) fillRings(land.r, LAND_COLOR[land.k] ?? '#a8b89a');
+
+  ctx.lineCap = ctx.lineJoin = 'round';
+  for (const road of data.roads) {
+    const style = ROAD_STYLE[road.k] ?? ROAD_STYLE.service;
+    ctx.beginPath();
+    road.p.forEach(([x, z], k) => (k ? ctx.lineTo(x, z) : ctx.moveTo(x, z)));
+    ctx.strokeStyle = style.color;
+    ctx.lineWidth = style.width;
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  data.campus.forEach(trace);
+  ctx.strokeStyle = '#d9483b';
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([5, 3]);
+  ctx.stroke();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.flipY = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+  return texture;
+}
+
+function buildTerrain(g, texture) {
+  const positions = new Float32Array(g.nx * g.nz * 3), uvs = new Float32Array(g.nx * g.nz * 2), indices = [];
+  for (let i = 0; i < g.nz; i++) {
+    for (let j = 0; j < g.nx; j++) {
+      const k = i * g.nx + j;
+      positions.set([g.x0 + j * g.step, g.heights[k], g.z0 + i * g.step], k * 3);
+      uvs.set([j / (g.nx - 1), i / (g.nz - 1)], k * 2);
+      if (i < g.nz - 1 && j < g.nx - 1) indices.push(k, k + g.nx, k + 1, k + 1, k + g.nx, k + g.nx + 1);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ map: texture }));
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function buildBuilding(b) {
+  const toShapePoints = (ring) => ring.map(([x, z]) => new THREE.Vector2(x, -z));
+  const shape = new THREE.Shape(toShapePoints(b.o));
+  shape.holes = b.ho.map((ring) => new THREE.Path(toShapePoints(ring)));
+  const base = b.lo - 2, top = b.g + b.h;
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: top - base, bevelEnabled: false });
+  geometry.rotateX(-Math.PI / 2);
+  geometry.translate(0, base, 0);
+  const roof = new THREE.MeshLambertMaterial({ color: b.rc ?? '#b8bcb9' });
+  const wall = new THREE.MeshLambertMaterial({ color: '#e6e3dc' });
+  const mesh = new THREE.Mesh(geometry, [roof, wall]);
+  mesh.castShadow = mesh.receiveShadow = true;
+  mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 30), new THREE.LineBasicMaterial({ color: '#6c7074' })));
+  mesh.userData.building = b;
+  return mesh;
+}
+
+function buildTrees(trees, groundAt) {
+  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(.22, .32, 3, 6), new THREE.MeshLambertMaterial({ color: '#6f543b' }), trees.length);
+  const crowns = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(2.6, 1), new THREE.MeshLambertMaterial(), trees.length);
+  const matrix = new THREE.Matrix4(), position = new THREE.Vector3(), scale = new THREE.Vector3(), rotation = new THREE.Quaternion(), color = new THREE.Color();
+  trees.forEach(([x, z, s], k) => {
+    const y = groundAt(x, z);
+    scale.setScalar(s);
+    matrix.compose(position.set(x, y + 1.5 * s, z), rotation, scale);
+    trunks.setMatrixAt(k, matrix);
+    scale.set(s, s * 1.35, s);
+    matrix.compose(position.set(x, y + 5 * s, z), rotation, scale);
+    crowns.setMatrixAt(k, matrix);
+    crowns.setColorAt(k, color.setHSL(.29 + (k % 7) * .012, .42, .3 + (k % 5) * .025));
+  });
+  crowns.castShadow = trunks.castShadow = true;
+  const group = new THREE.Group();
+  group.add(trunks, crowns);
+  return group;
+}
+
+async function main() {
+  const response = await fetch(DATA_URL);
+  if (!response.ok) throw new Error(`${DATA_URL}: HTTP ${response.status}`);
+  const data = await response.json();
+
+  const ground = padTerrain(data.terrain);
+  const groundAt = makeGroundSampler(ground);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.prepend(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color('#bcd6e8');
+  scene.add(new THREE.HemisphereLight('#ffffff', '#8a8f78', 1.5));
+  const sun = new THREE.DirectionalLight('#fff4e0', 2.2);
+  sun.position.set(-260, 480, 240);
+  sun.castShadow = true;
+  const shadowSize = matchMedia('(pointer: coarse)').matches ? 2048 : 4096;
+  sun.shadow.mapSize.set(shadowSize, shadowSize);
+  Object.assign(sun.shadow.camera, { left: -380, right: 380, top: 380, bottom: -380, far: 1200 });
+  sun.shadow.bias = -.0006;
+  scene.add(sun);
+
+  scene.add(buildTerrain(ground, paintGround(data, ground)));
+  const buildingMeshes = data.buildings.map(buildBuilding);
+  scene.add(...buildingMeshes);
+  scene.add(buildTrees(data.trees, groundAt));
+
+  const centerY = groundAt(0, 0);
+  const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 1, 4000);
+  camera.position.set(90, centerY + 470, 620);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, centerY, 0);
+  controls.enableDamping = true;
+  controls.maxPolarAngle = Math.PI * .47;
+  controls.minDistance = 40;
+  controls.maxDistance = 1400;
+
+  const listEl = document.getElementById('list'), infoEl = document.getElementById('info'), labelsEl = document.getElementById('labels');
+  const entries = buildingMeshes.map((mesh) => {
+    const b = mesh.userData.building;
+    const box = new THREE.Box3().setFromObject(mesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const title = b.n ?? `이름 없음 (${b.id})`;
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.innerHTML = '<span></span><small></small>';
+    button.children[0].textContent = title;
+    button.children[1].textContent = b.lv ? `${b.lv}층` : `${b.h} m`;
+    item.append(button);
+    let label = null;
+    if (b.n) {
+      label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = b.n;
+      labelsEl.append(label);
+    }
+    const entry = { mesh, b, title, button, label, center, anchor: new THREE.Vector3(center.x, box.max.y + 3, center.z) };
+    button.addEventListener('click', () => select(entry, true));
+    return { entry, item };
+  }).sort((a, c) => Number(!a.entry.b.n) - Number(!c.entry.b.n) || a.entry.title.localeCompare(c.entry.title, 'ko'))
+    .map(({ entry, item }) => { listEl.append(item); return entry; });
+
+  document.getElementById('summary').textContent = `건물 ${data.buildings.length}동 · 도로 ${data.roads.length}개 · 나무 ${data.trees.length}그루`;
+
+  let selected = null, flight = null;
+  function select(entry, fly) {
+    if (selected) {
+      selected.mesh.material[1].emissive.set(0);
+      selected.button.classList.remove('on');
+      selected.label?.classList.remove('on');
+    }
+    selected = entry;
+    infoEl.hidden = !entry;
+    if (!entry) return;
+    entry.mesh.material[1].emissive.set('#a06a00');
+    entry.button.classList.add('on');
+    entry.label?.classList.add('on');
+    entry.button.scrollIntoView({ block: 'nearest' });
+    const b = entry.b;
+    const rows = [['층수', b.lv ? `${b.lv}층` : '자료 없음'], ['높이', `${b.h} m`], ['지반 고도', `${b.g} m`], ['자료 ID', b.id]];
+    infoEl.innerHTML = '<h2></h2><dl></dl>';
+    infoEl.querySelector('h2').textContent = entry.title;
+    for (const [term, value] of rows) {
+      const dt = document.createElement('dt'), dd = document.createElement('dd');
+      dt.textContent = term;
+      dd.textContent = value;
+      infoEl.querySelector('dl').append(dt, dd);
+    }
+    if (fly) {
+      locator.stopFollowing();
+      const offset = new THREE.Vector3(70, 80 + b.h, 130);
+      flight = { target: entry.center.clone(), camera: entry.center.clone().add(offset) };
+    }
+  }
+
+  const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
+  const pick = (event) => {
+    pointer.set(event.clientX / innerWidth * 2 - 1, -(event.clientY / innerHeight) * 2 + 1);
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster.intersectObjects(buildingMeshes, false)[0];
+    return hit ? entries.find((e) => e.mesh === hit.object) : null;
+  };
+  let down = null;
+  renderer.domElement.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; flight = null; locator.stopFollowing(); });
+  renderer.domElement.addEventListener('pointerup', (e) => {
+    if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 5) select(pick(e), false);
+  });
+  renderer.domElement.addEventListener('wheel', () => { flight = null; }, { passive: true });
+  renderer.domElement.addEventListener('pointermove', (e) => { renderer.domElement.style.cursor = pick(e) ? 'pointer' : 'grab'; });
+
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  document.getElementById('panel-head').addEventListener('click', () => document.getElementById('panel').classList.toggle('open'));
+
+  const locator = createLocator();
+  function createLocator() {
+    const button = document.getElementById('locate'), statusEl = document.getElementById('gps-status'), dot = document.getElementById('me');
+    const phi = THREE.MathUtils.degToRad(data.meta.lat);
+    const metersPerLat = 111132.92 - 559.82 * Math.cos(2 * phi) + 1.175 * Math.cos(4 * phi);
+    const metersPerLon = 111412.84 * Math.cos(phi) - 93.5 * Math.cos(3 * phi);
+    const maxX = ground.x0 + (ground.nx - 1) * ground.step, maxZ = ground.z0 + (ground.nz - 1) * ground.step;
+
+    const SEGMENTS = 48, RINGS = 5;
+    const circleGeometry = new THREE.BufferGeometry();
+    circleGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array((1 + SEGMENTS * RINGS) * 3), 3));
+    const circleIndex = [];
+    for (let s = 0; s < SEGMENTS; s++) {
+      const next = (s + 1) % SEGMENTS;
+      circleIndex.push(0, 1 + next, 1 + s);
+      for (let r = 0; r < RINGS - 1; r++) {
+        const a = 1 + r * SEGMENTS + s, b = 1 + r * SEGMENTS + next, c = a + SEGMENTS, d = b + SEGMENTS;
+        circleIndex.push(a, b, c, b, d, c);
+      }
+    }
+    circleGeometry.setIndex(circleIndex);
+    const circle = new THREE.Mesh(circleGeometry, new THREE.MeshBasicMaterial({ color: '#2f7bff', transparent: true, opacity: .2, depthTest: false, depthWrite: false, side: THREE.DoubleSide }));
+    circle.visible = false;
+    circle.frustumCulled = false;
+    circle.renderOrder = 5;
+    scene.add(circle);
+
+    let watchId = null, following = false, hasFix = false, accuracy = 0;
+    const target = new THREE.Vector3(), shown = new THREE.Vector3(), screen = new THREE.Vector3();
+
+    function say(text) {
+      statusEl.hidden = !text;
+      statusEl.textContent = text ?? '';
+    }
+    function refreshButton() {
+      button.classList.toggle('on', watchId !== null);
+      button.textContent = watchId === null ? '내 위치' : following || !hasFix ? '위치 끄기' : '내 위치로';
+    }
+    function hide() {
+      hasFix = false;
+      circle.visible = false;
+      dot.hidden = true;
+    }
+    function stop() {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      following = false;
+      hide();
+      refreshButton();
+    }
+    function flyToMe() {
+      following = true;
+      flight = { target: target.clone(), camera: target.clone().add(new THREE.Vector3(0, 190, 230)) };
+      refreshButton();
+    }
+    function drawCircle() {
+      const position = circleGeometry.attributes.position, radius = Math.min(accuracy, 200);
+      position.setXYZ(0, shown.x, groundAt(shown.x, shown.z) + .6, shown.z);
+      for (let r = 0; r < RINGS; r++) {
+        for (let s = 0; s < SEGMENTS; s++) {
+          const distance = radius * (r + 1) / RINGS, angle = s / SEGMENTS * Math.PI * 2;
+          const x = shown.x + Math.cos(angle) * distance, z = shown.z + Math.sin(angle) * distance;
+          position.setXYZ(1 + r * SEGMENTS + s, x, groundAt(x, z) + .6, z);
+        }
+      }
+      position.needsUpdate = true;
+    }
+    function onPosition({ coords }) {
+      const x = (coords.longitude - data.meta.lon) * metersPerLon, z = (data.meta.lat - coords.latitude) * metersPerLat;
+      if (x < ground.x0 || x > maxX || z < ground.z0 || z > maxZ) {
+        hide();
+        following = false;
+        refreshButton();
+        say(`캠퍼스 지도 밖에 있습니다. 지도 중심까지 약 ${(Math.hypot(x, z) / 1000).toFixed(1)} km`);
+        return;
+      }
+      accuracy = coords.accuracy;
+      target.set(x, groundAt(x, z) + 1.5, z);
+      say(`내 위치 정확도 약 ${Math.round(accuracy)} m`);
+      if (!hasFix) {
+        hasFix = true;
+        shown.copy(target);
+        dot.hidden = false;
+        circle.visible = true;
+        flyToMe();
+      }
+    }
+    function onError(error) {
+      if (error.code === error.PERMISSION_DENIED) {
+        stop();
+        say('위치 권한이 거부되었습니다. 브라우저 설정에서 이 사이트의 위치를 허용해 주세요.');
+      } else if (error.code === error.POSITION_UNAVAILABLE) {
+        say('위치를 찾을 수 없습니다. 기기의 위치 서비스가 켜져 있는지 확인해 주세요.');
+      } else {
+        say('위치 신호를 기다리는 중입니다.');
+      }
+    }
+    button.addEventListener('click', () => {
+      if (!window.isSecureContext || !navigator.geolocation) {
+        say('이 주소에서는 위치를 쓸 수 없습니다. https 주소로 접속해 주세요.');
+      } else if (watchId === null) {
+        say('위치를 찾는 중입니다.');
+        watchId = navigator.geolocation.watchPosition(onPosition, onError, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+        refreshButton();
+      } else if (hasFix && !following) {
+        flyToMe();
+      } else {
+        stop();
+        say(null);
+      }
+    });
+
+    return {
+      stopFollowing() {
+        if (!following) return;
+        following = false;
+        refreshButton();
+      },
+      update() {
+        if (!hasFix) return;
+        const before = shown.clone();
+        shown.lerp(target, .12);
+        drawCircle();
+        if (following) {
+          const delta = shown.clone().sub(before);
+          (flight?.target ?? controls.target).add(delta);
+          (flight?.camera ?? camera.position).add(delta);
+        }
+        screen.copy(shown).project(camera);
+        dot.style.visibility = screen.z < 1 ? 'visible' : 'hidden';
+        dot.style.transform = `translate(${(screen.x + 1) / 2 * innerWidth}px, ${(1 - screen.y) / 2 * innerHeight}px) translate(-50%, -50%)`;
+      },
+      state: () => ({ hasFix, following, watching: watchId !== null, x: shown.x, z: shown.z, accuracy }),
+    };
+  }
+
+  const projected = new THREE.Vector3();
+  function updateLabels() {
+    for (const { label, anchor } of entries) {
+      if (!label) continue;
+      projected.copy(anchor).project(camera);
+      const visible = projected.z < 1;
+      label.style.visibility = visible ? 'visible' : 'hidden';
+      if (visible) label.style.transform = `translate(-50%, -100%) translate(${(projected.x + 1) / 2 * innerWidth}px, ${(1 - projected.y) / 2 * innerHeight}px)`;
+    }
+  }
+
+  renderer.setAnimationLoop(() => {
+    if (flight) {
+      controls.target.lerp(flight.target, .08);
+      camera.position.lerp(flight.camera, .08);
+      if (camera.position.distanceTo(flight.camera) < .5) flight = null;
+    }
+    controls.update();
+    locator.update();
+    renderer.render(scene, camera);
+    updateLabels();
+  });
+
+  window.campusMap = {
+    camera, controls, entries, locator, meta: data.meta,
+    stats: () => ({ buildings: buildingMeshes.length, triangles: renderer.info.render.triangles, calls: renderer.info.render.calls, selected: selected?.title ?? null }),
+    screenPoint: (title) => {
+      const p = entries.find((e) => e.title === title).center.clone().project(camera);
+      return { x: (p.x + 1) / 2 * innerWidth, y: (1 - p.y) / 2 * innerHeight };
+    },
+  };
+  document.body.dataset.ready = 'true';
+}
+
+main().catch((error) => {
+  console.error(error);
+  const el = document.getElementById('error');
+  el.hidden = false;
+  el.textContent = `지도를 불러오지 못했습니다. 프로젝트 폴더에서 로컬 서버로 여세요. (${error.message})`;
+});
+</script>
+</body>
+</html>
